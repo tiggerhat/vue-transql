@@ -1,46 +1,68 @@
-<script setup>
-import { RouterLink, RouterView } from 'vue-router'
-import { Menu } from 'ant-design-vue';
-</script>
-
 <template>
-  <a-menu mode="horizontal" theme="dark">
-    <a-menu-item key="home">
-      <router-link to="/">Home</router-link>
-    </a-menu-item>
-    <a-menu-item key="about">
-      <router-link to="/about">About</router-link>
-    </a-menu-item>
-  </a-menu>
-
-  <router-view />
+  <div id="app">
+    <a-layout style="min-height: 100vh">
+      <a-layout-header>
+        <h1 style="color: white; margin: 0; line-height: 64px;">Excel to SQL 数据导入工具</h1>
+      </a-layout-header>
+      
+      <a-layout>
+        <a-layout-sider width="200" style="background: #fff">
+          <a-menu
+            mode="inline"
+            :style="{ height: '100%', borderRight: 0 }"
+            :selected-keys="[currentRoute]"
+            @click="handleMenuClick"
+          >
+            <a-menu-item key="DatabaseConfig">
+              <template #icon>
+                <DatabaseOutlined />
+              </template>
+              数据库配置
+            </a-menu-item>
+            <a-menu-item key="ExcelUpload">
+              <template #icon>
+                <FileExcelOutlined />
+              </template>
+              Excel 上传
+            </a-menu-item>
+            <a-menu-item key="ColumnMapping">
+              <template #icon>
+                <SwapOutlined />
+              </template>
+              字段映射
+            </a-menu-item>
+          </a-menu>
+        </a-layout-sider>
+        
+        <a-layout-content :style="{ padding: '24px', minHeight: '280px' }">
+          <router-view />
+        </a-layout-content>
+      </a-layout>
+    </a-layout>
+  </div>
 </template>
 
-<style scoped>
-header {
-  line-height: 1.5;
+<script setup>
+import { ref, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import { DatabaseOutlined, FileExcelOutlined, SwapOutlined } from '@ant-design/icons-vue'
+
+const router = useRouter()
+const route = useRoute()
+
+const currentRoute = ref(route.name)
+
+const handleMenuClick = ({ key }) => {
+  router.push({ name: key })
 }
 
-.logo {
-  display: block;
-  margin: 0 auto 2rem;
-}
+watch(route, (newRoute) => {
+  currentRoute.value = newRoute.name
+})
+</script>
 
-@media (min-width: 1024px) {
-  header {
-    display: flex;
-    place-items: center;
-    padding-right: calc(var(--section-gap) / 2);
-  }
-
-  .logo {
-    margin: 0 2rem 0 0;
-  }
-
-  header .wrapper {
-    display: flex;
-    place-items: flex-start;
-    flex-wrap: wrap;
-  }
+<style>
+#app {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
 }
 </style>

@@ -2,14 +2,18 @@ import { createRouter, createWebHistory } from 'vue-router';
 
 const routes = [
   {
-    path: '/excel-upload',
-    name: 'ExcelUpload',
-    component: () => import('../views/ExcelUpload.vue')
+    path: '/',
+    redirect: '/database-config'
   },
   {
     path: '/database-config',
     name: 'DatabaseConfig',
     component: () => import('../views/DatabaseConfig.vue')
+  },
+  {
+    path: '/excel-upload',
+    name: 'ExcelUpload',
+    component: () => import('../views/ExcelUpload.vue')
   },
   {
     path: '/column-mapping',
@@ -19,7 +23,7 @@ const routes = [
 ];
 
 const router = createRouter({
-  history: createWebHistory(process.env.BASE_URL),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes
 });
 

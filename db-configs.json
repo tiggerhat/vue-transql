@@ -1,0 +1,10 @@
+{
+  "pms": {
+    "type": "mysql",
+    "host": "192.168.0.222",
+    "port": 33064,
+    "database": "pms",
+    "username": "root",
+    "password": "123qwe@!"
+  }
+}
