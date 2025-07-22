@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently --names \"SERVER,FRONTEND\" --prefix-colors \"bgBlue,bgGreen\" \"npm run server\" \"npm run frontend\"",
+    "frontend": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "server": "node server.js"
   },
   "dependencies": {
     "ant-design-vue": "^4.2.6",
@@ -22,6 +24,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.0",
+    "concurrently": "^9.2.0",
     "vite": "^7.0.0",
     "vite-plugin-vue-devtools": "^7.7.7"
   }

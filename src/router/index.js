@@ -13,7 +13,19 @@ const routes = [
   {
     path: '/excel-upload',
     name: 'ExcelUpload',
-    component: () => import('../views/ExcelUpload.vue')
+    component: () => import('../views/ExcelUpload.vue'),
+    children: [
+      {
+        path: '',
+        name: 'ExcelUploadDefault',
+        component: () => import('../views/excel/UploadTab.vue')
+      },
+      {
+        path: 'records',
+        name: 'WorkRecords',
+        component: () => import('../views/excel/RecordsTab.vue')
+      }
+    ]
   },
   {
     path: '/column-mapping',

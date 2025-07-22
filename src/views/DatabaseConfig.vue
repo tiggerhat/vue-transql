@@ -114,7 +114,7 @@
                 hoverable
                 @click="selectTable(table)"
                 :class="{ 'selected-table': selectedTable?.name === table.name }"
-                style="cursor: pointer; height: 120px;"
+                style="cursor: pointer; height: 140px;"
               >
                 <div style="font-size: 12px; color: #666;">
                   {{ table.columns?.length || 0 }} 个字段
@@ -133,6 +133,15 @@
                   <span v-if="table.columns?.length > 6" style="font-size: 10px; color: #999;">
                     +{{ table.columns.length - 6 }}
                   </span>
+                </div>
+                <div style="margin-top: 8px; text-align: center;" v-if="selectedTable?.name === table.name">
+                  <a-button 
+                    type="link" 
+                    size="small" 
+                    @click.stop="() => { selectTable(table); router.push('/excel-upload'); }"
+                  >
+                    直接导入Excel
+                  </a-button>
                 </div>
               </a-card>
             </a-col>
@@ -191,10 +200,12 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch, computed } from 'vue'
+import { ref, reactive, watch, computed, onMounted } from 'vue'
 import { message } from 'ant-design-vue'
 import { SearchOutlined } from '@ant-design/icons-vue'
 import { useRouter } from 'vue-router'
+import { apiRequest, API_CONFIG } from '@/config/api.js'
+import { store } from '@/config/store.js'
 
 const router = useRouter()
 const formRef = ref()
@@ -270,20 +281,10 @@ const onFinish = async () => {
 
 const testConnection = async () => {
   try {
-    const response = await fetch('http://localhost:3001/api/test-connection', {
+    await apiRequest(API_CONFIG.ENDPOINTS.TEST_CONNECTION, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
       body: JSON.stringify(dbConfig)
     })
-    
-    const result = await response.json()
-    
-    if (!response.ok || !result.success) {
-      throw new Error(result.message || '连接失败')
-    }
-    
     return true
   } catch (error) {
     throw new Error('连接失败: ' + error.message)
@@ -302,22 +303,13 @@ const saveNamedConfig = async () => {
   }
   
   try {
-    const response = await fetch('http://localhost:3001/api/save-config', {
+    await apiRequest(API_CONFIG.ENDPOINTS.SAVE_CONFIG, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
       body: JSON.stringify({
         name: configName.value,
         config: dbConfig
       })
     })
-    
-    const result = await response.json()
-    
-    if (!response.ok || !result.success) {
-      throw new Error(result.message || '保存配置失败')
-    }
     
     localStorage.setItem('currentDbConfig', JSON.stringify(dbConfig))
     
@@ -336,12 +328,7 @@ const loadSelectedConfig = async (name) => {
   if (!name) return
   
   try {
-    const response = await fetch('http://localhost:3001/api/get-configs')
-    const result = await response.json()
-    
-    if (!response.ok || !result.success) {
-      throw new Error(result.message || '获取配置失败')
-    }
+    const result = await apiRequest(API_CONFIG.ENDPOINTS.GET_CONFIGS)
     
     if (result.configs[name]) {
       Object.assign(dbConfig, result.configs[name])
@@ -359,15 +346,9 @@ const deleteConfig = async () => {
   if (!selectedConfigName.value) return
   
   try {
-    const response = await fetch(`http://localhost:3001/api/delete-config/${selectedConfigName.value}`, {
+    await apiRequest(`${API_CONFIG.ENDPOINTS.DELETE_CONFIG}/${selectedConfigName.value}`, {
       method: 'DELETE'
     })
-    
-    const result = await response.json()
-    
-    if (!response.ok || !result.success) {
-      throw new Error(result.message || '删除配置失败')
-    }
     
     await loadSavedConfigNames()
     
@@ -380,13 +361,7 @@ const deleteConfig = async () => {
 
 const loadSavedConfigNames = async () => {
   try {
-    const response = await fetch('http://localhost:3001/api/get-configs')
-    const result = await response.json()
-    
-    if (!response.ok || !result.success) {
-      throw new Error(result.message || '获取配置失败')
-    }
-    
+    const result = await apiRequest(API_CONFIG.ENDPOINTS.GET_CONFIGS)
     savedConfigNames.value = Object.keys(result.configs)
   } catch (error) {
     console.error('获取配置名称失败:', error)
@@ -395,17 +370,33 @@ const loadSavedConfigNames = async () => {
 }
 
 const proceedToUpload = () => {
-  localStorage.setItem('currentDbConfig', JSON.stringify(dbConfig))
+  // 保存到全局状态
+  store.setDbConfig(dbConfig)
   router.push('/excel-upload')
 }
 
 const loadTables = async () => {
+  // 如果全局状态中已有表结构数据且使用的是相同的数据库配置，则直接使用缓存
+  if (store.dbTables.length > 0 && 
+      store.dbConfig && 
+      store.dbConfig.host === dbConfig.host && 
+      store.dbConfig.port === dbConfig.port && 
+      store.dbConfig.database === dbConfig.database && 
+      store.dbConfig.username === dbConfig.username) {
+    tables.value = store.dbTables
+    message.success(`从缓存加载表结构成功，共 ${store.dbTables.length} 张表`)
+    return
+  }
+  
   loadingTables.value = true
   try {
     const tableStructure = await fetchTablesFromDatabase()
     tables.value = tableStructure
     
-    localStorage.setItem('dbTables', JSON.stringify(tableStructure))
+    // 保存到全局状态和localStorage
+    store.setDbTables(tableStructure)
+    store.setDbConfig(dbConfig)
+    
     message.success(`表结构加载成功，共找到 ${tableStructure.length} 张表`)
   } catch (error) {
     message.error('表结构加载失败: ' + error.message)
@@ -416,19 +407,10 @@ const loadTables = async () => {
 
 const fetchTablesFromDatabase = async () => {
   try {
-    const response = await fetch('http://localhost:3001/api/get-tables', {
+    const result = await apiRequest(API_CONFIG.ENDPOINTS.GET_TABLES, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
       body: JSON.stringify(dbConfig)
     })
-    
-    const result = await response.json()
-    
-    if (!response.ok || !result.success) {
-      throw new Error(result.message || '获取表结构失败')
-    }
     
     return result.tables
   } catch (error) {
@@ -439,7 +421,19 @@ const fetchTablesFromDatabase = async () => {
 const selectTable = (table) => {
   selectedTable.value = table
   showTableDetail.value = true
-  localStorage.setItem('selectedTable', JSON.stringify(table))
+  
+  // 保存到全局状态
+  store.setSelectedTable(table)
+  
+  // 显示"直接导入"按钮
+  setTimeout(() => {
+    message.info(
+      '已选择表 ' + table.name + '，可以直接进入Excel导入页面',
+      3,
+      () => {},
+      true
+    )
+  }, 500)
 }
 
 const filteredTables = computed(() => {
@@ -458,15 +452,27 @@ const paginatedTables = computed(() => {
 })
 
 const loadSavedConfig = async () => {
-  const saved = localStorage.getItem('currentDbConfig')
-  if (saved) {
-    Object.assign(dbConfig, JSON.parse(saved))
+  // 优先从全局状态加载
+  if (store.dbConfig) {
+    Object.assign(dbConfig, store.dbConfig)
     connectionValid.value = true
+    
+    // 如果全局状态中有表结构，也加载
+    if (store.dbTables.length > 0) {
+      tables.value = store.dbTables
+    }
+    
+    // 如果有选中的表，也加载
+    if (store.selectedTable) {
+      selectedTable.value = store.selectedTable
+    }
   }
   await loadSavedConfigNames()
 }
 
-loadSavedConfig()
+onMounted(() => {
+  loadSavedConfig()
+})
 </script>
 
 <style scoped>

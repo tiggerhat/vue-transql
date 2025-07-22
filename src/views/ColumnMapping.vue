@@ -115,6 +115,12 @@
           <a-button @click="executeSQL" type="primary" danger :disabled="!canExecute">
             执行SQL
           </a-button>
+          <a-button @click="saveWorkRecord" type="default" :disabled="!canPreview">
+            保存工作记录
+          </a-button>
+          <a-button @click="goToWorkRecords" type="link">
+            查看工作记录
+          </a-button>
         </a-space>
       </div>
     </a-card>
@@ -149,16 +155,74 @@
         show-icon
       />
     </a-modal>
+    
+    <!-- 保存工作记录模态框 -->
+    <a-modal
+      v-model:open="saveRecordModalVisible"
+      title="保存工作记录"
+      @ok="confirmSaveRecord"
+      @cancel="saveRecordModalVisible = false"
+      :confirm-loading="savingRecord"
+    >
+      <a-form :model="recordForm" layout="vertical">
+        <a-form-item 
+          label="记录名称" 
+          :rules="[{ required: true, message: '请输入记录名称' }]"
+        >
+          <a-input 
+            v-model:value="recordForm.name" 
+            placeholder="输入工作记录名称"
+            @keyup.enter="confirmSaveRecord"
+          />
+        </a-form-item>
+        
+        <a-form-item label="描述信息">
+          <a-textarea 
+            v-model:value="recordForm.description" 
+            placeholder="输入记录描述（可选）"
+            :rows="3"
+          />
+        </a-form-item>
+        
+        <a-divider />
+        
+        <a-descriptions title="记录信息" :column="1" size="small">
+          <a-descriptions-item label="源文件">
+            {{ excelInfo.fileName }}
+          </a-descriptions-item>
+          <a-descriptions-item label="工作表">
+            {{ excelInfo.worksheet }}
+          </a-descriptions-item>
+          <a-descriptions-item label="目标表">
+            {{ selectedTable }}
+          </a-descriptions-item>
+          <a-descriptions-item label="操作类型">
+            {{ getOperationText(operationType) }}
+          </a-descriptions-item>
+          <a-descriptions-item label="数据行数">
+            {{ excelInfo.data?.length || 0 }}
+          </a-descriptions-item>
+          <a-descriptions-item label="映射字段数">
+            {{ mappingData.filter(m => m.excelColumn).length }}
+          </a-descriptions-item>
+        </a-descriptions>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, inject } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
 import { generateSQL } from '../utils/sqlGenerator'
+import { apiRequest, API_CONFIG } from '@/config/api.js'
+import { store } from '@/config/store.js'
 
 const router = useRouter()
+
+// 从父组件注入刷新工作记录的方法
+const refreshWorkRecords = inject('refreshWorkRecords', null)
 
 const excelInfo = ref({})
 const dbTables = ref([])
@@ -168,6 +232,12 @@ const operationType = ref('insert')
 const mappingData = ref([])
 const sqlPreview = ref('')
 const executeModalVisible = ref(false)
+const saveRecordModalVisible = ref(false)
+const savingRecord = ref(false)
+const recordForm = reactive({
+  name: '',
+  description: ''
+})
 
 const excelColumns = computed(() => {
   return excelInfo.value.columns || []
@@ -197,9 +267,6 @@ onMounted(() => {
 
 const loadData = () => {
   const excelData = localStorage.getItem('excelData')
-  const dbConfig = localStorage.getItem('currentDbConfig')
-  const selectedTableData = localStorage.getItem('selectedTable')
-  const savedTables = localStorage.getItem('dbTables')
   
   if (!excelData) {
     message.error('未找到Excel数据，请先上传文件')
@@ -207,7 +274,8 @@ const loadData = () => {
     return
   }
   
-  if (!dbConfig) {
+  // 优先从全局状态获取数据库配置和表结构
+  if (!store.dbConfig) {
     message.error('未找到数据库配置，请先配置数据库')
     router.push('/database-config')
     return
@@ -215,17 +283,32 @@ const loadData = () => {
   
   excelInfo.value = JSON.parse(excelData)
   
-  if (savedTables) {
-    dbTables.value = JSON.parse(savedTables)
+  // 从全局状态获取表结构
+  if (store.dbTables.length > 0) {
+    dbTables.value = store.dbTables
   } else {
-    message.warning('未找到表结构数据，请先在数据库配置页面加载表结构')
-    dbTables.value = []
+    // 备用方案：从localStorage获取
+    const savedTables = localStorage.getItem('dbTables')
+    if (savedTables) {
+      dbTables.value = JSON.parse(savedTables)
+    } else {
+      message.warning('未找到表结构数据，请先在数据库配置页面加载表结构')
+      dbTables.value = []
+    }
   }
   
-  if (selectedTableData) {
-    const tableInfo = JSON.parse(selectedTableData)
-    selectedTable.value = tableInfo.name
-    onTableChange(tableInfo.name)
+  // 如果全局状态中有选中的表，直接使用
+  if (store.selectedTable) {
+    selectedTable.value = store.selectedTable.name
+    onTableChange(store.selectedTable.name)
+  } else {
+    // 备用方案：从localStorage获取
+    const selectedTableData = localStorage.getItem('selectedTable')
+    if (selectedTableData) {
+      const tableInfo = JSON.parse(selectedTableData)
+      selectedTable.value = tableInfo.name
+      onTableChange(tableInfo.name)
+    }
   }
 }
 
@@ -357,6 +440,85 @@ const copySQLToClipboard = async () => {
 
 const goToConfig = () => {
   router.push('/database-config')
+}
+
+// 保存工作记录
+const saveWorkRecord = () => {
+  if (!validateMapping()) return
+  
+  // 生成默认记录名称
+  const timestamp = new Date().toLocaleDateString('zh-CN').replace(/\//g, '')
+  recordForm.name = `${excelInfo.value.fileName?.replace(/\.[^/.]+$/, '')}_${selectedTable.value}_${timestamp}`
+  recordForm.description = ''
+  
+  saveRecordModalVisible.value = true
+}
+
+// 确认保存工作记录
+const confirmSaveRecord = async () => {
+  if (!recordForm.name.trim()) {
+    message.error('请输入记录名称')
+    return
+  }
+  
+  savingRecord.value = true
+  try {
+    // 获取当前数据库配置
+    const dbConfig = store.dbConfig || JSON.parse(localStorage.getItem('currentDbConfig') || '{}')
+    
+    const recordData = {
+      name: recordForm.name.trim(),
+      description: recordForm.description.trim(),
+      excelData: excelInfo.value.data,
+      columns: excelInfo.value.columns,
+      originalFileName: excelInfo.value.fileName,
+      worksheet: excelInfo.value.worksheet,
+      mapping: mappingData.value.filter(m => m.excelColumn), // 只保存已映射的字段
+      targetTable: selectedTable.value,
+      operationType: operationType.value,
+      dbConfig
+    }
+    
+    const result = await apiRequest(API_CONFIG.ENDPOINTS.SAVE_WORK_RECORD, {
+      method: 'POST',
+      body: JSON.stringify(recordData)
+    })
+    
+    message.success('工作记录保存成功！')
+    saveRecordModalVisible.value = false
+    
+    // 刷新工作记录列表
+    if (refreshWorkRecords) {
+      refreshWorkRecords()
+    }
+    
+    // 使用Modal提示是否查看工作记录
+    setTimeout(() => {
+      message.success('工作记录已保存成功！', 3)
+      
+      // 使用简单的确认框
+      const shouldView = confirm('是否立即查看工作记录？')
+      if (shouldView) {
+        router.push('/excel-upload/records')
+      }
+    }, 500)
+    
+  } catch (error) {
+    message.error('保存工作记录失败: ' + error.message)
+  } finally {
+    savingRecord.value = false
+  }
+}
+
+// 跳转到工作记录页面
+const goToWorkRecords = () => {
+  router.push('/excel-upload/records')
+}
+
+// 工具函数
+const getOperationText = (type) => {
+  const texts = { insert: '插入', update: '更新', upsert: '插入或更新' }
+  return texts[type] || type
 }
 </script>
 
