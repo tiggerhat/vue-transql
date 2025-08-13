@@ -10,12 +10,25 @@
       </a-col>
       <a-col :span="12">
         <a-card title="数据库表信息" size="small">
-          <a-form layout="inline">
+          <a-form layout="vertical">
+            <a-form-item label="数据库配置">
+              <a-select 
+                v-model:value="selectedDbConfig" 
+                placeholder="选择数据库配置"
+                style="width: 100%"
+                @change="onDbConfigChange"
+                :disabled="dbConfigs.length === 0"
+              >
+                <a-select-option v-for="config in dbConfigs" :key="config.name" :value="config.name">
+                  {{ config.name }} ({{ config.type }})
+                </a-select-option>
+              </a-select>
+            </a-form-item>
             <a-form-item label="目标表">
               <a-select 
                 v-model:value="selectedTable" 
                 placeholder="选择数据库表"
-                style="width: 200px"
+                style="width: 100%"
                 @change="onTableChange"
                 :disabled="dbTables.length === 0"
               >
@@ -24,8 +37,8 @@
                 </a-select-option>
               </a-select>
             </a-form-item>
-            <a-form-item v-if="dbTables.length === 0">
-              <a-button @click="goToConfig" type="link">去加载表结构</a-button>
+            <a-form-item v-if="dbConfigs.length === 0">
+              <a-button @click="goToConfig" type="link">配置数据库连接</a-button>
             </a-form-item>
           </a-form>
         </a-card>
@@ -225,6 +238,8 @@ const router = useRouter()
 const refreshWorkRecords = inject('refreshWorkRecords', null)
 
 const excelInfo = ref({})
+const dbConfigs = ref([])
+const selectedDbConfig = ref('')
 const dbTables = ref([])
 const selectedTable = ref('')
 const selectedTableInfo = ref(null)
@@ -265,7 +280,7 @@ onMounted(() => {
   loadData()
 })
 
-const loadData = () => {
+const loadData = async () => {
   const excelData = localStorage.getItem('excelData')
   
   if (!excelData) {
@@ -274,16 +289,12 @@ const loadData = () => {
     return
   }
   
-  // 优先从全局状态获取数据库配置和表结构
-  if (!store.dbConfig) {
-    message.error('未找到数据库配置，请先配置数据库')
-    router.push('/database-config')
-    return
-  }
-  
   excelInfo.value = JSON.parse(excelData)
   
-  // 从全局状态获取表结构
+  // 加载数据库配置列表
+  await loadDbConfigs()
+  
+  // 从全局状态获取表结构，如果没有数据库配置也可以正常工作
   if (store.dbTables.length > 0) {
     dbTables.value = store.dbTables
   } else {
@@ -292,24 +303,74 @@ const loadData = () => {
     if (savedTables) {
       dbTables.value = JSON.parse(savedTables)
     } else {
-      message.warning('未找到表结构数据，请先在数据库配置页面加载表结构')
+      message.info('暂无数据库表结构，请在需要时配置数据库连接')
       dbTables.value = []
     }
   }
   
-  // 如果全局状态中有选中的表，直接使用
-  if (store.selectedTable) {
-    selectedTable.value = store.selectedTable.name
-    onTableChange(store.selectedTable.name)
+  // 如果Excel数据中包含目标表信息，直接使用
+  if (excelInfo.value.targetTable) {
+    selectedTable.value = excelInfo.value.targetTable
+    onTableChange(excelInfo.value.targetTable)
   } else {
-    // 备用方案：从localStorage获取
-    const selectedTableData = localStorage.getItem('selectedTable')
-    if (selectedTableData) {
-      const tableInfo = JSON.parse(selectedTableData)
-      selectedTable.value = tableInfo.name
-      onTableChange(tableInfo.name)
+    // 如果全局状态中有选中的表，直接使用
+    if (store.selectedTable) {
+      selectedTable.value = store.selectedTable.name
+      onTableChange(store.selectedTable.name)
+    } else {
+      // 备用方案：从localStorage获取
+      const selectedTableData = localStorage.getItem('selectedTable')
+      if (selectedTableData) {
+        const tableInfo = JSON.parse(selectedTableData)
+        selectedTable.value = tableInfo.name
+        onTableChange(tableInfo.name)
+      }
     }
   }
+  
+  // 检查是否存在已有的映射配置（从工作记录恢复）
+  const existingMapping = localStorage.getItem('existingMapping')
+  if (existingMapping) {
+    try {
+      const mappingConfig = JSON.parse(existingMapping)
+      
+      // 设置操作类型
+      operationType.value = mappingConfig.operationType || 'insert'
+      
+      // 如果目标表匹配，恢复映射配置
+      if (mappingConfig.targetTable === selectedTable.value) {
+        // 延迟执行以确保mappingData已初始化
+        setTimeout(() => {
+          restoreMapping(mappingConfig.mapping)
+          message.success('已恢复之前的字段映射配置')
+        }, 100)
+      }
+      
+      // 清除临时数据
+      localStorage.removeItem('existingMapping')
+    } catch (error) {
+      console.error('恢复映射配置失败:', error)
+      localStorage.removeItem('existingMapping')
+    }
+  }
+}
+
+// 恢复映射配置
+const restoreMapping = (savedMapping) => {
+  if (!savedMapping || !Array.isArray(savedMapping)) return
+  
+  savedMapping.forEach(saved => {
+    const mappingIndex = mappingData.value.findIndex(m => m.dbColumn === saved.dbColumn)
+    if (mappingIndex !== -1) {
+      mappingData.value[mappingIndex] = {
+        ...mappingData.value[mappingIndex],
+        excelColumn: saved.excelColumn,
+        defaultValue: saved.defaultValue || '',
+        transform: saved.transform || null,
+        isKey: saved.isKey || false
+      }
+    }
+  })
 }
 
 
@@ -438,6 +499,63 @@ const copySQLToClipboard = async () => {
   }
 }
 
+// 加载数据库配置列表
+const loadDbConfigs = async () => {
+  try {
+    const data = await apiRequest(API_CONFIG.ENDPOINTS.GET_CONFIGS)
+    // 过滤出数据库配置（排除工作记录）
+    const configs = Object.entries(data.configs || {})
+      .filter(([key, config]) => !key.startsWith('work_') && config.type !== 'work_record')
+      .map(([key, config]) => ({
+        name: key,
+        type: config.type,
+        host: config.host,
+        database: config.database
+      }))
+    
+    dbConfigs.value = configs
+    
+    // 如果有当前选中的数据库配置，自动选择
+    const currentDbConfigName = localStorage.getItem('currentDbConfigName')
+    if (currentDbConfigName && configs.find(c => c.name === currentDbConfigName)) {
+      selectedDbConfig.value = currentDbConfigName
+      onDbConfigChange(currentDbConfigName)
+    }
+  } catch (error) {
+    console.error('加载数据库配置失败:', error)
+    dbConfigs.value = []
+  }
+}
+
+// 数据库配置改变时的处理
+const onDbConfigChange = async (configName) => {
+  if (!configName) {
+    dbTables.value = []
+    selectedTable.value = ''
+    selectedTableInfo.value = null
+    return
+  }
+  
+  try {
+    // 保存当前选中的数据库配置
+    localStorage.setItem('currentDbConfigName', configName)
+    
+    // 加载该配置下的表结构
+    const tablesData = await apiRequest(`${API_CONFIG.ENDPOINTS.GET_TABLES}?config=${configName}`)
+    dbTables.value = tablesData.tables || []
+    
+    // 清空当前选中的表
+    selectedTable.value = ''
+    selectedTableInfo.value = null
+    mappingData.value = []
+    
+    message.success(`已加载数据库配置 ${configName} 的表结构`)
+  } catch (error) {
+    message.error('加载表结构失败: ' + error.message)
+    console.error(error)
+  }
+}
+
 const goToConfig = () => {
   router.push('/database-config')
 }
@@ -446,9 +564,9 @@ const goToConfig = () => {
 const saveWorkRecord = () => {
   if (!validateMapping()) return
   
-  // 生成默认记录名称
-  const timestamp = new Date().toLocaleDateString('zh-CN').replace(/\//g, '')
-  recordForm.name = `${excelInfo.value.fileName?.replace(/\.[^/.]+$/, '')}_${selectedTable.value}_${timestamp}`
+  // 生成默认记录名称：文件名+sheet名称+数据表名+上传时间
+  const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '').replace(/-/g, '').replace('T', '')
+  recordForm.name = `${excelInfo.value.fileName?.replace(/\.[^/.]+$/, '')}_${excelInfo.value.worksheet}_${selectedTable.value}_${timestamp}`
   recordForm.description = ''
   
   saveRecordModalVisible.value = true
@@ -463,8 +581,11 @@ const confirmSaveRecord = async () => {
   
   savingRecord.value = true
   try {
-    // 获取当前数据库配置
-    const dbConfig = store.dbConfig || JSON.parse(localStorage.getItem('currentDbConfig') || '{}')
+    // 获取当前工作表对应的工作记录ID
+    const workRecordId = localStorage.getItem(`workRecordId_${excelInfo.value.worksheet}`)
+    
+    // 获取当前选中的数据库配置名称
+    const dbConfigName = selectedDbConfig.value || ''
     
     const recordData = {
       name: recordForm.name.trim(),
@@ -476,15 +597,27 @@ const confirmSaveRecord = async () => {
       mapping: mappingData.value.filter(m => m.excelColumn), // 只保存已映射的字段
       targetTable: selectedTable.value,
       operationType: operationType.value,
-      dbConfig
+      dbConfigName, // 关联数据库配置名称
+      status: 'mapped' // 更新状态为已映射
     }
     
-    const result = await apiRequest(API_CONFIG.ENDPOINTS.SAVE_WORK_RECORD, {
-      method: 'POST',
-      body: JSON.stringify(recordData)
-    })
+    let result
+    if (workRecordId) {
+      // 更新现有记录
+      result = await apiRequest(`${API_CONFIG.ENDPOINTS.UPDATE_WORK_RECORD}/${workRecordId}`, {
+        method: 'PUT',
+        body: JSON.stringify(recordData)
+      })
+      message.success('工作记录更新成功！')
+    } else {
+      // 创建新记录（后备方案）
+      result = await apiRequest(API_CONFIG.ENDPOINTS.SAVE_WORK_RECORD, {
+        method: 'POST',
+        body: JSON.stringify(recordData)
+      })
+      message.success('工作记录保存成功！')
+    }
     
-    message.success('工作记录保存成功！')
     saveRecordModalVisible.value = false
     
     // 刷新工作记录列表

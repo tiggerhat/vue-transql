@@ -8,7 +8,11 @@
       "mcp__ide__getDiagnostics",
       "Bash(pkill:*)",
       "Bash(npm run lint)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(find:*)",
+      "Bash(node:*)",
+      "Bash(rm:*)",
+      "Bash(npm start)"
     ],
     "deny": []
   }

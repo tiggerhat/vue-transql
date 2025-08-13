@@ -50,6 +50,13 @@
                 </a-button>
                 <a-button 
                   size="small" 
+                  @click.stop="restartFromMapping(item)"
+                  type="link"
+                >
+                  从字段映射重新开始
+                </a-button>
+                <a-button 
+                  size="small" 
                   @click.stop="deleteRecord(item.id)"
                   type="link" 
                   danger
@@ -68,6 +75,9 @@
                     @change="(e) => toggleSelection(item.id, e.target.checked)"
                   />
                   <span style="font-weight: 600;">{{ item.name }}</span>
+                  <a-tag :color="getStatusColor(item.status)">
+                    {{ getStatusText(item.status) }}
+                  </a-tag>
                   <a-tag :color="getOperationColor(item.operationType)">
                     {{ getOperationText(item.operationType) }}
                   </a-tag>
@@ -86,6 +96,10 @@
                         <span>
                           <TableOutlined style="color: #1890ff; margin-right: 4px;" />
                           目标表: {{ item.targetTable }}
+                        </span>
+                        <span v-if="item.dbConfigName">
+                          <DatabaseOutlined style="color: #722ed1; margin-right: 4px;" />
+                          数据库配置: {{ item.dbConfigName }}
                         </span>
                         <span>
                           <NumberOutlined style="color: #fa8c16; margin-right: 4px;" />
@@ -127,7 +141,7 @@
         </a-radio-group>
         <a-button 
           type="primary" 
-          @click="generateSQL"
+          @click="generateSQLFromRecords"
           :loading="generatingSQL"
           :disabled="selectedRecords.length === 0"
         >
@@ -169,22 +183,21 @@
           <a-descriptions-item label="目标表">
             {{ currentRecord.targetTable }}
           </a-descriptions-item>
-          <a-descriptions-item label="操作类型">
-            <a-tag :color="getOperationColor(currentRecord.operationType)">
-              {{ getOperationText(currentRecord.operationType) }}
-            </a-tag>
-          </a-descriptions-item>
-          <a-descriptions-item label="数据行数">
-            {{ currentRecord.recordCount }}
-          </a-descriptions-item>
-          <a-descriptions-item label="创建时间">
-            {{ formatDateTime(currentRecord.createdAt) }}
-          </a-descriptions-item>
-        </a-descriptions>
-        
-        <a-divider />
-        
-        <h4>字段映射</h4>
+          <a-descriptions-item label="数据库配置" v-if="currentRecord.dbConfigName">
+          {{ currentRecord.dbConfigName }}
+        </a-descriptions-item>
+        <a-descriptions-item label="操作类型">
+          <a-tag :color="getOperationColor(currentRecord.operationType)">
+            {{ getOperationText(currentRecord.operationType) }}
+          </a-tag>
+        </a-descriptions-item>
+        <a-descriptions-item label="数据行数">
+          {{ currentRecord.recordCount }}
+        </a-descriptions-item>
+        <a-descriptions-item label="创建时间">
+          {{ formatDateTime(currentRecord.createdAt) }}
+        </a-descriptions-item>
+      </a-descriptions>
         <a-table
           :columns="mappingColumns"
           :data-source="currentRecordMappings"
@@ -249,15 +262,21 @@
 <script setup>
 import { ref, computed, onMounted, inject, watch } from 'vue'
 import { message } from 'ant-design-vue'
+import { useRouter } from 'vue-router'
 import { 
   SearchOutlined, 
   ReloadOutlined, 
   FileTextOutlined,
   FileExcelOutlined,
   TableOutlined,
-  NumberOutlined
+  NumberOutlined,
+  DatabaseOutlined
 } from '@ant-design/icons-vue'
 import { apiRequest, API_CONFIG } from '@/config/api.js'
+import { generateSQL } from '@/utils/sqlGenerator.js'
+import { store } from '@/config/store.js'
+
+const router = useRouter()
 
 // 注入全局刷新触发器
 const workRecordRefreshTrigger = inject('workRecordRefreshTrigger', ref(0))
@@ -431,7 +450,7 @@ const deleteRecord = async (id) => {
 }
 
 // 生成SQL
-const generateSQL = async () => {
+const generateSQLFromRecords = async () => {
   generatingSQL.value = true
   try {
     const data = await apiRequest(API_CONFIG.ENDPOINTS.GENERATE_SQL_FROM_WORK_RECORDS, {
@@ -473,11 +492,33 @@ const copyAllSQL = async () => {
     let allSQL = ''
     
     if (sqlResult.value.mode === 'merge') {
-      allSQL = generateSQLPreview(sqlResult.value)
+      // 使用实际的SQL生成器
+      const config = {
+        tableName: sqlResult.value.targetTable,
+        operationType: sqlResult.value.operationType,
+        mapping: sqlResult.value.mapping,
+        data: sqlResult.value.data
+      }
+      allSQL = generateSQL(config)
     } else {
-      allSQL = sqlResult.value.records
-        .map(record => `-- ${record.name}\n${generateSQLPreview(record)}`)
-        .join('\n\n')
+      // 为每个记录生成完整的SQL
+      const sqlStatements = await Promise.all(
+        sqlResult.value.records.map(async (record) => {
+          const config = {
+            tableName: record.targetTable,
+            operationType: record.operationType,
+            mapping: record.mapping,
+            data: record.data
+          }
+          try {
+            const sql = generateSQL(config)
+            return `-- ${record.name}\n${sql}`
+          } catch (error) {
+            return `-- ${record.name}\n-- SQL生成失败: ${error.message}`
+          }
+        })
+      )
+      allSQL = sqlStatements.join('\n\n')
     }
     
     await navigator.clipboard.writeText(allSQL)
@@ -498,8 +539,64 @@ const getOperationText = (type) => {
   return texts[type] || type
 }
 
+const getStatusColor = (status) => {
+  const colors = { 
+    uploaded: 'processing', 
+    mapped: 'warning', 
+    completed: 'success' 
+  }
+  return colors[status] || 'default'
+}
+
+const getStatusText = (status) => {
+  const texts = { 
+    uploaded: '已上传', 
+    mapped: '已映射', 
+    completed: '已完成' 
+  }
+  return texts[status] || status
+}
+
 const formatDateTime = (dateStr) => {
   return new Date(dateStr).toLocaleString('zh-CN')
+}
+
+// 从字段映射重新开始
+const restartFromMapping = async (record) => {
+  try {
+    // 获取完整的工作记录数据
+    const data = await apiRequest(`${API_CONFIG.ENDPOINTS.GET_WORK_RECORD}/${record.id}`)
+    const fullRecord = { ...record, ...data.workRecord }
+    
+    // 将数据保存到localStorage，以便在字段映射页面使用
+    const excelData = {
+      fileName: fullRecord.originalFileName,
+      worksheet: fullRecord.worksheet,
+      data: fullRecord.excelData,
+      columns: fullRecord.columns
+    }
+    localStorage.setItem('excelData', JSON.stringify(excelData))
+    
+    // 保存目标表信息到全局状态
+    const targetTable = store.dbTables.find(t => t.name === fullRecord.targetTable)
+    if (targetTable) {
+      store.selectedTable = targetTable
+    }
+    
+    // 保存已有的映射配置到localStorage，以便在字段映射页面恢复
+    if (fullRecord.mapping) {
+      localStorage.setItem('existingMapping', JSON.stringify({
+        mapping: fullRecord.mapping,
+        operationType: fullRecord.operationType,
+        targetTable: fullRecord.targetTable
+      }))
+    }
+    
+    message.success('正在跳转到字段映射页面...')
+    router.push('/column-mapping')
+  } catch (error) {
+    message.error('获取工作记录数据失败: ' + error.message)
+  }
 }
 
 // 暴露方法给父组件

@@ -8,6 +8,7 @@ import fs from 'fs/promises';
 const app = express();
 const port = 3001;
 const configFile = 'db-configs.json';
+const workRecordsFile = 'work-records.json';
 
 app.use(cors());
 app.use(express.json());
@@ -23,6 +24,19 @@ async function loadConfigs() {
 
 async function saveConfigs(configs) {
   await fs.writeFile(configFile, JSON.stringify(configs, null, 2), 'utf8');
+}
+
+async function loadWorkRecords() {
+  try {
+    const data = await fs.readFile(workRecordsFile, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    return {};
+  }
+}
+
+async function saveWorkRecords(workRecords) {
+  await fs.writeFile(workRecordsFile, JSON.stringify(workRecords, null, 2), 'utf8');
 }
 
 async function createMysqlConnection(config) {
@@ -165,15 +179,15 @@ app.post('/api/save-work-record', async (req, res) => {
     mapping,
     targetTable,
     operationType,
-    dbConfig
+    dbConfigName  // 数据库配置名称
   } = req.body;
   
   try {
-    const configs = await loadConfigs();
+    const workRecords = await loadWorkRecords();
     const recordKey = `work_${name}_${Date.now()}`;
     
-    configs[recordKey] = { 
-      type: 'work_record',
+    workRecords[recordKey] = { 
+      id: recordKey,
       name,
       description: description || '',
       excelData, 
@@ -183,15 +197,16 @@ app.post('/api/save-work-record', async (req, res) => {
       mapping,
       targetTable,
       operationType: operationType || 'insert',
-      dbConfig,
+      dbConfigName,  // 关联数据库配置名称
       recordCount: excelData?.length || 0,
+      status: 'uploaded',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
     
-    await saveConfigs(configs);
+    await saveWorkRecords(workRecords);
     
-    res.json({ success: true, message: '工作记录保存成功', recordId: recordKey });
+    res.json({ success: true, message: '工作记录保存成功', workRecord: workRecords[recordKey] });
   } catch (error) {
     console.error('保存工作记录失败:', error);
     res.status(500).json({ 
@@ -204,26 +219,13 @@ app.post('/api/save-work-record', async (req, res) => {
 // 获取工作记录列表
 app.get('/api/get-work-records', async (_, res) => {
   try {
-    const configs = await loadConfigs();
+    const workRecords = await loadWorkRecords();
     
-    // 过滤出工作记录并转换为数组格式
-    const workRecords = Object.entries(configs)
-      .filter(([key, config]) => key.startsWith('work_') && config.type === 'work_record')
-      .map(([key, config]) => ({
-        id: key,
-        name: config.name,
-        description: config.description,
-        originalFileName: config.originalFileName,
-        worksheet: config.worksheet,
-        targetTable: config.targetTable,
-        operationType: config.operationType,
-        recordCount: config.recordCount,
-        createdAt: config.createdAt,
-        updatedAt: config.updatedAt
-      }))
+    // 转换为数组格式并按时间排序
+    const workRecordsList = Object.values(workRecords)
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
     
-    res.json({ success: true, workRecords });
+    res.json({ success: true, workRecords: workRecordsList });
   } catch (error) {
     console.error('获取工作记录失败:', error);
     res.status(500).json({ 
@@ -238,16 +240,32 @@ app.get('/api/get-work-record/:id', async (req, res) => {
   const { id } = req.params;
   
   try {
+    const workRecords = await loadWorkRecords();
     const configs = await loadConfigs();
     
-    if (!configs[id] || configs[id].type !== 'work_record') {
+    if (!workRecords[id]) {
       return res.status(404).json({
         success: false,
         message: '工作记录不存在'
       });
     }
     
-    res.json({ success: true, workRecord: configs[id] });
+    // 如果工作记录关联了数据库配置，获取数据库配置详情
+    let dbConfig = null;
+    if (workRecords[id].dbConfigName) {
+      const dbConfigEntry = configs[workRecords[id].dbConfigName];
+      if (dbConfigEntry) {
+        dbConfig = dbConfigEntry;
+      }
+    }
+    
+    res.json({ 
+      success: true, 
+      workRecord: {
+        ...workRecords[id],
+        dbConfig  // 添加数据库配置详情
+      }
+    });
   } catch (error) {
     console.error('获取工作记录详情失败:', error);
     res.status(500).json({ 
@@ -257,92 +275,95 @@ app.get('/api/get-work-record/:id', async (req, res) => {
   }
 });
 
-// 删除工作记录
-app.delete('/api/delete-work-record/:id', async (req, res) => {
+// 更新工作记录
+app.put('/api/update-work-record/:id', async (req, res) => {
   const { id } = req.params;
+  const updateData = req.body;
   
   try {
-    const configs = await loadConfigs();
+    const workRecords = await loadWorkRecords();
     
-    if (!configs[id] || configs[id].type !== 'work_record') {
+    if (!workRecords[id]) {
       return res.status(404).json({
         success: false,
         message: '工作记录不存在'
       });
     }
     
-    delete configs[id];
-    await saveConfigs(configs);
+    // 更新记录，保留原有数据但覆盖新数据
+    workRecords[id] = {
+      ...workRecords[id],
+      ...updateData,
+      updatedAt: new Date().toISOString()
+    };
     
-    res.json({ success: true, message: '工作记录删除成功' });
+    await saveWorkRecords(workRecords);
+    
+    res.json({ success: true, message: '工作记录更新成功', workRecord: workRecords[id] });
   } catch (error) {
-    console.error('删除工作记录失败:', error);
+    console.error('更新工作记录失败:', error);
     res.status(500).json({ 
       success: false, 
-      message: error.message || '删除工作记录失败' 
+      message: error.message || '更新工作记录失败' 
     });
   }
 });
 
-// 从多个工作记录生成合并的SQL
+// 从多个工作记录生成SQL
 app.post('/api/generate-sql-from-work-records', async (req, res) => {
-  const { recordIds, mergeMode = 'separate' } = req.body;
+  const { recordIds } = req.body;
   
   try {
-    const configs = await loadConfigs();
-    const selectedRecords = recordIds
-      .map(id => ({ id, ...configs[id] }))
-      .filter(record => record && record.type === 'work_record');
+    const workRecords = await loadWorkRecords();
+    
+    // 获取所有指定的工作记录
+    const selectedRecords = recordIds.map(id => workRecords[id]).filter(record => record);
     
     if (selectedRecords.length === 0) {
       return res.status(400).json({
         success: false,
-        message: '未找到有效的工作记录'
+        message: '未找到指定的工作记录'
       });
     }
     
-    // 根据合并模式处理数据
-    let result;
-    if (mergeMode === 'merge') {
-      // 合并模式：将所有数据合并到一个操作中
-      const combinedData = [];
-      const firstRecord = selectedRecords[0];
+    // 合并数据 - 如果选择了多个记录
+    let combinedData = [];
+    let targetTable = null;
+    let operationType = 'insert';
+    let mapping = null;
+    
+    selectedRecords.forEach(record => {
+      if (record.excelData && Array.isArray(record.excelData)) {
+        combinedData = combinedData.concat(record.excelData);
+      }
       
-      selectedRecords.forEach(record => {
-        if (record.targetTable !== firstRecord.targetTable) {
-          throw new Error('合并模式下所有记录必须操作同一张表');
-        }
-        combinedData.push(...(record.excelData || []));
+      // 使用第一个记录的映射和目标表
+      if (!targetTable && record.targetTable) {
+        targetTable = record.targetTable;
+        mapping = record.mapping;
+        operationType = record.operationType || 'insert';
+      }
+    });
+    
+    if (!targetTable || !mapping) {
+      return res.status(400).json({
+        success: false,
+        message: '所选工作记录缺少必要的映射信息'
       });
-      
-      result = {
-        mode: 'merge',
-        targetTable: firstRecord.targetTable,
-        operationType: firstRecord.operationType,
-        mapping: firstRecord.mapping,
-        data: combinedData,
-        totalRecords: combinedData.length,
-        sourceFiles: selectedRecords.map(r => r.originalFileName)
-      };
-    } else {
-      // 分离模式：每个工作记录生成独立的SQL
-      result = {
-        mode: 'separate',
-        records: selectedRecords.map(record => ({
-          id: record.id,
-          name: record.name,
-          targetTable: record.targetTable,
-          operationType: record.operationType,
-          mapping: record.mapping,
-          data: record.excelData,
-          recordCount: record.excelData?.length || 0,
-          originalFileName: record.originalFileName
-        })),
-        totalRecords: selectedRecords.reduce((sum, record) => sum + (record.excelData?.length || 0), 0)
-      };
     }
     
-    res.json({ success: true, result });
+    // 生成SQL
+    const sqlStatements = generateSQLFromMapping(combinedData, mapping, targetTable, operationType);
+    
+    res.json({ 
+      success: true, 
+      data: {
+        sqlStatements,
+        recordCount: combinedData.length,
+        targetTable,
+        operationType
+      }
+    });
   } catch (error) {
     console.error('从工作记录生成SQL失败:', error);
     res.status(500).json({ 
@@ -424,6 +445,33 @@ app.post('/api/generate-sql-from-configs', async (req, res) => {
     res.status(500).json({ 
       success: false, 
       message: error.message || '从配置生成SQL失败' 
+    });
+  }
+});
+
+// 删除工作记录
+app.delete('/api/delete-work-record/:id', async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    const workRecords = await loadWorkRecords();
+    
+    if (!workRecords[id]) {
+      return res.status(404).json({
+        success: false,
+        message: '工作记录不存在'
+      });
+    }
+    
+    delete workRecords[id];
+    await saveWorkRecords(workRecords);
+    
+    res.json({ success: true, message: '工作记录删除成功' });
+  } catch (error) {
+    console.error('删除工作记录失败:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || '删除工作记录失败' 
     });
   }
 });

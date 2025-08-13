@@ -63,7 +63,7 @@
                 测试连接
               </a-button>
               <a-button @click="proceedToUpload" :disabled="!connectionValid" type="primary">
-                进入数据导入
+                完成配置
               </a-button>
             </a-space>
           </a-form-item>
@@ -270,7 +270,7 @@ const onFinish = async () => {
     await testConnection()
     message.success('数据库连接成功！')
     connectionValid.value = true
-    await loadTables()
+    // 不再自动加载表结构
   } catch (error) {
     message.error('数据库连接失败: ' + error.message)
     connectionValid.value = false
@@ -311,7 +311,8 @@ const saveNamedConfig = async () => {
       })
     })
     
-    localStorage.setItem('currentDbConfig', JSON.stringify(dbConfig))
+    // 保存配置名称到localStorage，用于关联工作记录
+    localStorage.setItem('currentDbConfigName', configName.value)
     
     await loadSavedConfigNames()
     selectedConfigName.value = configName.value
@@ -393,7 +394,7 @@ const loadTables = async () => {
     const tableStructure = await fetchTablesFromDatabase()
     tables.value = tableStructure
     
-    // 保存到全局状态和localStorage
+    // 保存到全局状态
     store.setDbTables(tableStructure)
     store.setDbConfig(dbConfig)
     
